@@ -8,7 +8,7 @@
 #include <stdbool.h>
 
 #define MAP_SIZE 40
-#define MAP_HEIGHT 10
+#define MAP_HEIGHT 20
 #define PLAYER_AVATAR '@'
 #define OBSTICLE '#'
 #define MIRROR 'M'
@@ -93,8 +93,9 @@ void update_player(int input, player_t* player);
 rays_list_t* create_rays(player_t* player, char buffer[MAP_SIZE][MAP_SIZE]);
 void draw_frame(frame_t* frame, player_t* player);
 char get_wall_char(ray_t* ray);
-bool wall_collision(double dx, double dy, double dz, double pos_x, double pos_y, double pos_z);
-bool player_colision(player_t* player, double dx, double dy, double dz, double pos_x, double pos_y, double pos_z);
+bool wall_collision(double pos_x, double pos_y, double pos_z);
+bool mirror_collision(double pos_x, double pos_y, double pos_z);
+bool player_colision(player_t* player, double pos_x, double pos_y, double pos_z);
 int sign(int a);
 object_t create_object(int type);
 int min_int(int a, int b);
@@ -175,7 +176,7 @@ void initialize_map() {
         for (int i = 0; i < MAP_SIZE; i++) {
             for (int j = 0; j < MAP_SIZE; j++) {
                 // Set borders
-                if (i == 0 || i == MAP_SIZE - 1 || j == 0 || j == MAP_SIZE - 1) {
+                if (i == 0 || i == MAP_SIZE - 1 || j == 0 || j == MAP_SIZE - 1 || k == 0 || k == MAP_HEIGHT - 1) {
                     map[k][i][j] = create_object(OBSTICLE_TYPE); 
                 } else {
                     map[k][i][j] = create_object(VOID_TYPE); 
@@ -203,9 +204,9 @@ void add_random_obsticles() {
 
     }
 
-    // for (int j = 10; j < 40; j++) {
-    //     map[0][20][j] = create_object(MIRROR_TYPE); // Horizontal wall at row 20
-    // }
+    for (int j = 10; j < 40; j++) {
+        map[MAP_HEIGHT / 2][20][j] = create_object(MIRROR_TYPE); // Horizontal wall at row 20
+    }
 }
 
 void enable_raw_mode() {
@@ -224,9 +225,9 @@ void disable_raw_mode() {
 
 void init_player(player_t* player) {
     player->x = 6;
-    player->y = 6;
+    player->y = 2;
     player->z = MAP_HEIGHT / 2;
-    player->angleXY = 0;
+    player->angleXY = -M_PI / 2;
     player->angleZY = 0;
     player->color = COLOR_BLACK;
 }
@@ -318,106 +319,105 @@ frame_t create_frame(player_t* player, bool write_map) {
     return frame;
 }
 
-bool wall_collision(double dx, double dy, double dz, double pos_x, double pos_y, double pos_z) {
-    return map[(int)(pos_z + dz)][(int)(pos_y + dy)][(int)(pos_x + dx)].type == OBSTICLE_TYPE;
+bool wall_collision(double pos_x, double pos_y, double pos_z) {
+    return map[(int)(pos_z+0.5)][(int)(pos_y+0.5)][(int)(pos_x+0.5)].type == OBSTICLE_TYPE;
 }
 
-bool player_colision(player_t* player, double dx, double dy, double dz, double pos_x, double pos_y, double pos_z) {
-    return ((int) player -> x == (int)(pos_x + dx)) && ((int)player -> y == (int)(pos_y + dy)) && ((int)player -> z == (int)(pos_z + dz));
+bool mirror_collision(double pos_x, double pos_y, double pos_z) {
+    return map[(int)(pos_z+0.5)][(int)(pos_y+0.5)][(int)(pos_x+0.5)].type == MIRROR_TYPE;
+}
+
+bool player_colision(player_t* player, double pos_x, double pos_y, double pos_z) {
+    return ((int) player -> x == (int)(pos_x)) && ((int)player -> y == (int)(pos_y)) && ((int)player -> z == (int)(pos_z));
 }
 
 rays_list_t* create_rays(player_t* player, char buffer[MAP_SIZE][MAP_SIZE]) {
-    int I = VIEW_ANGLE / RENDER_STEP;
-    int J = HEIGHT_ANGLE / HEIGHT_RENDER_STEP;
-    ray_t* rays = malloc(sizeof(ray_t) * (int) (I * J));
+    int I = LINES;
+    int J = COLS;
+    ray_t* rays = malloc(sizeof(ray_t) * (I * J));
 
     int rays_beyond_z_counter = 0;
     int rays_into_walls_counter = 0;
     int rays_into_player_counter = 0;
     int rays_to_long_counter = 0;
     
-    for (int i = 0; i < I; i += 1) {
-        double ray_angle_XOY = player->angleXY - VIEW_ANGLE / 2 + i * RENDER_STEP;
-        
-        // create a list of rays 
-        for (int j = 0; j < J; j += 1) {
-            double pos_x = (double) player->x;
-            double pos_y = (double) player->y;
-            double pos_z = (double) player->z;
+    for (int i = 0; i < I; i++) {
+        double ZY_angle = -HEIGHT_ANGLE / 2 + ((((double) i + 1) / (double) I)  * HEIGHT_ANGLE) + player->angleZY;
+        for (int j = 0; j < J; j++){
+            double XY_angle = -VIEW_ANGLE / 2 + ((((double) j + 1) / (double) J)  * VIEW_ANGLE) + player->angleXY;
 
-            double ray_angle_OYZ = player->angleZY - HEIGHT_ANGLE / 2 + j * HEIGHT_RENDER_STEP;
+            double x = player->x; 
+            double y = player->y; 
+            double z = player->z; 
 
-            double dx = cos(ray_angle_XOY) * cos(ray_angle_OYZ);
-            double dy = sin(ray_angle_XOY) * cos(ray_angle_OYZ);
-            double dz = cos(ray_angle_OYZ);
-
-            bool is_reflected = false;
-            bool is_player = false;
+            double dx = 0;
+            double dy = 0;
+            double dz = 0;
 
             double total_distance = 0;
-            while (total_distance < max_ray_lenght) {
-                if (pos_z + dz < 0 || (int) (pos_z + dz) > MAP_HEIGHT) {
-                    rays_beyond_z_counter++;
-                    break;
-                }
-                if (wall_collision(dx, dy, dz, pos_x, pos_y, pos_z)) {
-                    rays_into_walls_counter++;
-                    break;
-                }
-                if (is_reflected && player_colision(player, dx, dy, dz, pos_x, pos_y, pos_z)) {
-                    pos_x += dx;
-                    pos_y += dy;
-                    pos_z += dz;
-                    buffer[(int)(pos_y)][(int)(pos_x)] = '.';
-                    total_distance += sqrt(dx * dx + dy * dy + dz * dz);
-                    is_player = true;
 
-                    rays_into_player_counter++;
-                    break;
-                }
-                switch (map[(int)(pos_z + dz)][(int)(pos_y + dy)][(int)(pos_x + dx)].type) {
-                    case VOID_TYPE:
-                        pos_x += dx;
-                        pos_y += dy;
-                        pos_z += dz;
-                        buffer[(int)(pos_y)][(int)(pos_x)] = '.';
-                        total_distance += sqrt(dx * dx + dy * dy + dz * dz);
-                    break;
-                    case MIRROR_TYPE:
-                        is_reflected = true;
-                        if (map[(int)(pos_z + dz)][(int) pos_y][(int)(pos_x + sign(dx))].type == MIRROR_TYPE) {
-                            dx *= -1;
-                        } else {
-                            dy *= -1;
-                        }
-                        pos_x += dx;
-                        pos_y += dy;
-                        pos_z += dz;
-                        buffer[(int)(pos_y)][(int)(pos_x)] = '.';
-                        total_distance += sqrt(dx * dx + dy * dy + dz * dz);
-                    break;
-                }
+            int dx_dir = 1;
+            int dy_dir = 1;
+            int dz_dir = 1;
 
-                if (total_distance >= max_ray_lenght) {
+            ray_t* ray = malloc(sizeof(ray_t));
+            ray->index = i*j + j;
+            bool is_reflacted = false;
+            while (true)
+            {
+                if (total_distance > max_ray_lenght) {
                     rays_to_long_counter++;
+                    ray->color = COLOR_BLACK;
+                    break;
                 }
+                if (wall_collision(x, y, x)) {
+                    rays_into_walls_counter++;
+                    ray->color = map[(int)(z+0.5)][(int)(y+0.5)][(int)(x+0.5)].color;
+                    break;
+                }
+                if (is_reflacted && player_colision(player, x, y, z)) {
+                    ray->is_player = true;
+                    rays_into_player_counter++;
+                    ray->color = player->color;
+                    break;
+                }
+                if (mirror_collision(x, y, z)) {
+                    is_reflacted = true;
+                    double prev_x = x - dx;
+                    double prev_y = x - dy;
+                    double prev_z = x - dz;
+                    if(mirror_collision(prev_x + dx, prev_y, prev_z)) {
+                        dx_dir *= -1;
+                    }
+                    if(mirror_collision(prev_x, prev_y + dy, prev_z)) {
+                        dy_dir *= -1;
+                    }
+                    if(mirror_collision(prev_x, prev_y, prev_z + dz)) {
+                        dz_dir *= -1;
+                    }
+                    break;
+                }
+
+                dx = cos(ZY_angle) * cos(XY_angle) * dx_dir;
+                dy = cos(ZY_angle) * sin(XY_angle) * dy_dir;
+                dz = sin(ZY_angle) * dz_dir;
+
+                double d_lenght = pow(dx*dx + dy*dy + dz*dz, 1/3); // always should be
+
+                total_distance += d_lenght;
+
+                x += dx;
+                y += dy;
+                z += dz;
             }
 
-            ray_t ray;
+            ray->end_x = x;
+            ray->end_y = y;
+            ray->end_z = z;
 
-            ray.index = i*j + j;
-            ray.lenght = total_distance;
-            ray.is_player = is_player;
-            ray.end_z = pos_z;
-            ray.end_y = pos_y;
-            ray.end_x = pos_x;
-            if (is_player) {
-                ray.color = player->color;
-            } else {
-                ray.color = map[(int)(pos_z + dz)][(int) (pos_y + dy)][(int) (pos_x + dx)].color;
-            }
-            *(rays + i*j + j) = ray;
+            ray->lenght = total_distance;
 
+            rays[ray->index] = *ray;
         }
     }
 
@@ -484,7 +484,7 @@ void draw_frame(frame_t* frame, player_t* player) {
     mvprintw(start_for_stats_on_screen + 7, COLS*0.8, "into player %d", frame->rays->rays_into_player_counter);
     mvprintw(start_for_stats_on_screen + 8, COLS*0.8, "beyond z %d", frame->rays->rays_beyond_z_counter);
     mvprintw(start_for_stats_on_screen + 9, COLS*0.8, "too long %d", frame->rays->rays_to_long_counter);
-    render_minimap(frame, player, false);
+    render_minimap(frame, player, true);
 
     refresh(); 
 }
@@ -520,25 +520,27 @@ void render_minimap(frame_t* frame, player_t* player, bool frame_color) {
         end_j = min_int(minimap_width / 2 + player->x, MAP_SIZE);
     }
 
+    int z = (int)(player->z);
+
     for (int i = start_i; i < end_i; i++) {
         for (int j = start_j; j < end_j; j++) {
             if (frame_color && frame->buffer[i][j] == '#') {
                 char color_type;
                 if (map[0][i][j].color == COLOR_BLACK) {
                     continue;
-                } else if(map[0][i][j].color == COLOR_RED) {
+                } else if(map[z][i][j].color == COLOR_RED) {
                     color_type = 'R';
-                } else if(map[0][i][j].color == COLOR_GREEN) {
+                } else if(map[z][i][j].color == COLOR_GREEN) {
                     color_type = 'G';
-                } else if(map[0][i][j].color == COLOR_YELLOW) {
+                } else if(map[z][i][j].color == COLOR_YELLOW) {
                     color_type = 'Y';
-                } else if(map[0][i][j].color == COLOR_BLUE) {
+                } else if(map[z][i][j].color == COLOR_BLUE) {
                     color_type = 'b';
-                } else if(map[0][i][j].color == COLOR_MAGENTA) {
+                } else if(map[z][i][j].color == COLOR_MAGENTA) {
                     color_type = 'M';
-                } else if(map[0][i][j].color == COLOR_CYAN) {
+                } else if(map[z][i][j].color == COLOR_CYAN) {
                     color_type = 'C';
-                } else if(map[0][i][j].color == COLOR_WHITE) {
+                } else if(map[z][i][j].color == COLOR_WHITE) {
                     color_type = 'W';
                 }
         
