@@ -31,7 +31,7 @@ typedef struct object {
 typedef struct player {
     double x;
     double y;
-    double angle;
+    double angleXY;
     int color;
 } player_t;
 
@@ -202,13 +202,13 @@ void disable_raw_mode() {
 void init_player(player_t* player) {
     player->x = 6;
     player->y = 6;
-    player->angle = 0;
+    player->angleXY = 0;
     player->color = COLOR_BLACK;
 }
 
 void update_player(int input, player_t* player) {
-    double cos_ = cos(player->angle);
-    double sin_ = sin(player->angle);
+    double cos_ = cos(player->angleXY);
+    double sin_ = sin(player->angleXY);
     switch (input) {
         // Movement
         case 'd': 
@@ -237,8 +237,8 @@ void update_player(int input, player_t* player) {
             break;
 
         // Camera
-        case 68: player->angle -= CAMERA_SPEED; break; // left
-        case 67: player->angle += CAMERA_SPEED; break; // right
+        case 68: player->angleXY -= CAMERA_SPEED; break; // left
+        case 67: player->angleXY += CAMERA_SPEED; break; // right
 
         default: break;
     }
@@ -293,7 +293,7 @@ ray_t* create_rays(player_t* player, char buffer[MAP_SIZE][MAP_SIZE]) {
         double pos_x = (double) player->x;
         double pos_y = (double) player->y;
 
-        double ray_angle = player->angle - VIEW_ANGLE / 2 + i * RENDER_STEP;
+        double ray_angle = player->angleXY - VIEW_ANGLE / 2 + i * RENDER_STEP;
 
         double dx = cos(ray_angle);
         double dy = sin(ray_angle);
@@ -353,8 +353,8 @@ ray_t* create_rays(player_t* player, char buffer[MAP_SIZE][MAP_SIZE]) {
     double view_x = player->x;
     double view_y = player->y;
 
-    double dx = cos(player->angle);
-    double dy = sin(player->angle);
+    double dx = cos(player->angleXY);
+    double dy = sin(player->angleXY);
 
     // where player looks
     while (map[(int)(view_y + dy)][(int)(view_x + dx)].type == VOID_TYPE) {
@@ -403,7 +403,7 @@ void draw_frame(frame_t* frame, player_t* player) {
     }
 
     mvprintw(LINES*0.8, COLS*0.8, "X: %f Y: %f", player->x, player->y);
-    mvprintw(LINES*0.85, COLS*0.8, "angle %f", player->angle / M_PI * 180);
+    mvprintw(LINES*0.85, COLS*0.8, "angle %f", player->angleXY / M_PI * 180);
 
     render_minimap(frame, player, false);
 

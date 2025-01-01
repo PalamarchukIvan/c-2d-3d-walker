@@ -18,8 +18,6 @@
 
 
 const double max_ray_lenght = MAP_SIZE * 2;
-const double RENDER_STEP = 0.04;
-const double HEIGHT_RENDER_STEP = 0.04;
 const double HEIGHT_ANGLE = M_PI/4;
 const double VIEW_ANGLE = M_PI/2;
 const double CAMERA_SPEED = M_PI / 24;
@@ -280,8 +278,8 @@ void update_player(int input, player_t* player) {
         case 68: player->angleXY -= CAMERA_SPEED; break; // left
         case 67: player->angleXY += CAMERA_SPEED; break; // right
 
-        case 66: player->angleZY -= CAMERA_SPEED; break; // down
-        case 65: player->angleZY += CAMERA_SPEED; break; // up
+        case 65: player->angleZY -= CAMERA_SPEED; break; // down
+        case 66: player->angleZY += CAMERA_SPEED; break; // up
 
         case 'p': 
             map[(int)player->z][(int)player->y][(int)player->x] = create_object(OBSTICLE_TYPE);
@@ -471,12 +469,6 @@ void draw_frame(frame_t* frame, player_t* player) {
         double z_acc = 0;
         for (int j = 0; j < J; j++) {
             ray_t current_ray = rays[i * J + j];
-            // x_acc += current_ray.end_x;
-            // y_acc += current_ray.end_y;
-            // z_acc += current_ray.end_z;
-            // mvprintw(start_for_stats_on_screen, COLS*0.8, "X: %f Y: %f Z: %f", current_ray.end_x, current_ray.end_y, current_ray.end_z);
-            // mvprintw(start_for_stats_on_screen+1, COLS*0.8, "X_M: %f Y_M: %f Z_M: %f", x_acc/j, y_acc/j, z_acc/j);
-            // mvprintw(start_for_stats_on_screen+2, COLS*0.8, "Col: %f Len: %f I_P: %f", current_ray.color, current_ray.lenght, current_ray.is_player);
 
             double distance = current_ray.lenght;
             int color = current_ray.color;
@@ -485,7 +477,6 @@ void draw_frame(frame_t* frame, player_t* player) {
             attron(COLOR_PAIR(color));
             mvaddch(i, j, wall); 
             attroff(COLOR_PAIR(color));
-// getch();
         }
     }
 
