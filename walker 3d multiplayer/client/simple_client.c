@@ -101,6 +101,9 @@ ENetPeer* init_connection(ENetHost* client);
 ENetHost* init_enet();
 void print_server_data(ENetEvent* event);
 
+
+const int CHANEL_COUNT = 64;
+
 int main() {
     ENetHost* client = init_enet();
     if (client == NULL) return 1;
@@ -134,7 +137,7 @@ ENetHost* init_enet() {
         return NULL;
     }
     atexit(enet_deinitialize);
-    ENetHost* client = enet_host_create(NULL, 1, 1, 0, 0);
+    ENetHost* client = enet_host_create(NULL, 1, CHANEL_COUNT, 0, 0);
     return client;
 }
 
@@ -151,7 +154,7 @@ ENetPeer* init_connection(ENetHost* client) {
     enet_address_set_host(&address, server_ip);
     address.port = port;
 
-    ENetPeer* peer = enet_host_connect(client, &address, 2, 0);
+    ENetPeer* peer = enet_host_connect(client, &address, CHANEL_COUNT, 0);
     if (!peer) {
         fprintf(stderr, "No available peers for initiating an ENet connection.\n");
         return NULL;
@@ -177,7 +180,7 @@ ENetPeer* init_connection(ENetHost* client) {
         switch (event.type) {
             case ENET_EVENT_TYPE_RECEIVE:
                 printf("Packet received from server:\n");
-                printf("\nClient: Received packet size: %zu\n", event.packet->dataLength);
+                printf("\nClient: Received packet size: %zu from channel: %u\n", event.packet->dataLength, event.channelID);
 
                 print_server_data(&event);
 
@@ -199,7 +202,7 @@ ENetPeer* init_connection(ENetHost* client) {
 
 void print_server_data(ENetEvent* event) {
     for (size_t i = 0; i < event->packet->dataLength; ++i) {
-        printf("%02X ", event->packet->data[i]); // Print byte as hex
+        printf("%c", event->packet->data[i]); // Print byte as hex
     }
     printf("\n");
 }

@@ -17,11 +17,20 @@
 #define MINIMAP_HEIGHT 20
 #define MINIMAP_WIDTH 36
 
+#define CHANEL_COUNT 64
+
 const double max_ray_lenght = MAP_SIZE * 2;
 const double HEIGHT_ANGLE = M_PI / 4;
 const double VIEW_ANGLE = M_PI / 2;
 const double CAMERA_SPEED = M_PI / 24;
 const double brightnest_level = 5;
+
+const int OUTCOME_MAP_UPDATES_CHANEL = 0;
+const int OUTCOME_NEW_PLAYER_CHANEL = 1;
+const int OUTCOME_LIST_OF_PLAYERS_CHANEL = 3;
+const int OUTCOME_NEW_PLAYER_POSITION = 4;
+
+const int INCOME_PLAYER_UPDATED_CHANEL = 2;
 
 typedef struct object {
     int color;
@@ -76,7 +85,7 @@ typedef struct frame {
 
 typedef struct server_init_response {
     object_t map[MAP_HEIGHT][MAP_SIZE][MAP_SIZE];
-    position_t other_players[64];
+    position_t* other_players;
     int player_count;
     player_t player;
 } server_init_response_t;
@@ -88,14 +97,14 @@ const int PLAYER_TYPE = 3;
 
 const char OBSTACLE_SYMBOL = '#';
 const char MIRROR_SYMBOL = 'M';
-const char EMPTY_SYMBOL = ' ';
+const char EMPTY_SYMBOL = '.';
 
 static object_t map[MAP_HEIGHT][MAP_SIZE][MAP_SIZE];
 player_t* this_player;
-position_t other_players[64];
+position_t* other_players;
 int player_count;
 
-void pull_server_updates(ENetHost* client, ENetPeer* peer); // Forward declaration
+void pull_server_updates(ENetHost* client, ENetPeer* peer, int timeout);
 
 void init_ncyrses();
 void initialize_map();
@@ -131,22 +140,33 @@ int main() {
     ENetPeer* peer = init_connection(client);
     if (peer == NULL) return 1;
 
+    printf("Peer created\n");
+
     enable_raw_mode();
     init_ncyrses();
 
+    this_player = malloc(sizeof(player_t));
     int input = 'x';
+    pull_server_updates(client, peer, 1000);
     do {
+        printf("Pulling server updates\n");
+
+        printf("Creating frame\n");
         frame_t frame = create_frame(false);
+        printf("Frame created\n");
         draw_frame(&frame);
 
         input = getchar();
         update_player(input);
+        printf("Player data: |X: %lf|Y: %lf|Z: %lf|XY: %lf|ZY: %lf|Color:%d\n",
+            this_player->position.x, this_player->position.y, this_player->position.z,
+            this_player->angleXY, this_player->angleZY, this_player->color);
         send_data_to_server(peer, client);
 
         free(frame.rays->rays);
         free(frame.rays);
+        pull_server_updates(client, peer, 0);
 
-        pull_server_updates(client, peer);
     } while (input != 'x');
 
     enet_peer_disconnect(peer, 0);
@@ -185,66 +205,186 @@ ENetPeer* init_connection(ENetHost* client) {
     ENetAddress address;
     char server_ip[64];
     int port;
+    printf("Enter server address (IP:PORT): ");
     scanf("%63[^:]:%d", server_ip, &port);
-    printf("Try to connect to ip %s, with port %d", server_ip, port);
+    printf("Try to connect to ip %s, with port %d\n", server_ip, port);
 
     enet_address_set_host(&address, server_ip);
-    address.port = 1111;
+    address.port = port;
 
-    ENetPeer* peer = enet_host_connect(client, &address, 2, 0);
+    ENetPeer* peer = enet_host_connect(client, &address, CHANEL_COUNT, 0);
     if (!peer) {
         fprintf(stderr, "No available peers for initiating an ENet connection.\n");
         return NULL;
     }
 
-    {
-        ENetEvent event;
-        if (enet_host_service(client, &event, 5000) > 0 &&
-            event.type == ENET_EVENT_TYPE_CONNECT) {
-            printf("Connection to server succeeded.\n");
-
-            // If your server sets 'event.data' with something meaningful,
-            // you can cast it. But typically you'd receive an ENET_EVENT_TYPE_RECEIVE
-            // event with 'event.packet->data'.
-            // Minimal fix: just cast to avoid the warning
-            server_init_response_t* init = (server_init_response_t*) (enet_uint32) event.data;
-
-            // If 'init' is actually not valid here, you might need to handle it differently.
-            memcpy(map, init->map, sizeof(init->map));
-            memset(other_players, 0, sizeof(other_players));
-            memcpy(other_players, init->other_players, sizeof(init->other_players));
-            player_count = init->player_count;
-
-            this_player = malloc(sizeof(player_t));
-            this_player->position = init->player.position;
-            this_player->angleXY = init->player.angleXY;
-            this_player->angleZY = init->player.angleZY;
-            this_player->color = init->player.color;
-        } else {
-            enet_peer_reset(peer);
-            fprintf(stderr, "Connection to server failed.\n");
-            return NULL;
-        }
+    ENetEvent event;
+    if (enet_host_service(client, &event, 5000) > 0 &&
+        event.type == ENET_EVENT_TYPE_CONNECT) {
+        printf("Connection to server succeeded.\n");
+    } else {
+        enet_peer_reset(peer);
+        fprintf(stderr, "Connection to server failed.\n");
+        return NULL;
     }
+
     return peer;
 }
 
-void pull_server_updates(ENetHost* client, ENetPeer* peer) {
+position_t* deserialize_positions(char* str, size_t* count) {
+    if (!str || !count) return NULL;
+
+    // Count the number of lines (rows) in the string
+    size_t line_count = 0;
+    for (const char* p = str; *p; ++p) {
+        if (*p == '\n') ++line_count;
+    }
+
+    // Allocate memory for the positions array
+    position_t* positions = malloc(line_count * sizeof(position_t));
+    if (!positions) {
+        perror("Failed to allocate memory for deserialization");
+        return NULL;
+    }
+
+    // Parse each line
+    size_t parsed_count = 0;
+    const char* line_start = str;
+    while (*line_start) {
+        double x, y, z;
+        int scanned = sscanf(line_start, "%lf|%lf|%lf\n", &x, &y, &z);
+        if (scanned == 3) {
+            positions[parsed_count++] = (position_t){x, y, z};
+        }
+
+        // Move to the next line
+        line_start = strchr(line_start, '\n');
+        if (line_start) ++line_start;
+        else break;
+    }
+
+    *count = parsed_count; // Update the count of parsed positions
+    return positions; // Caller must free this memory
+}
+
+void deserialize_map(const char *data) {
+    const char *ptr = data;
+    for (int i = 0; i < MAP_HEIGHT; i++) {
+        for (int j = 0; j < MAP_SIZE; j++) {
+            for (int k = 0; k < MAP_SIZE; k++) {
+                if (ptr == NULL || *ptr == '\0') {
+                    fprintf(stderr, "Error: Insufficient data for deserialization. Expected [%d][%d][%d]\n", i, j, k);
+                    return;
+                }
+
+                int color, type;
+                char symbol;
+
+                // Validate if the data chunk contains enough characters for parsing
+                const char *next_sep = strchr(ptr, '|');
+                if (next_sep == NULL) {
+                    fprintf(stderr, "Error: Missing '|' separator after [%d][%d][%d]. Data: '%s'\n", i, j, k, ptr);
+                    return;
+                }
+
+                // Ensure that there is enough data for sscanf
+                size_t chunk_len = next_sep - ptr;
+                if (chunk_len < 5) { // Minimum length for "1 1 X|" format
+                    fprintf(stderr, "Error: Incomplete data chunk at [%d][%d][%d]. Data: '%s'\n", i, j, k, ptr);
+                    return;
+                }
+
+                // Parse the data chunk
+                int matched = sscanf(ptr, "%d %d %c", &color, &type, &symbol);
+                if (matched != 3) {
+                    fprintf(stderr, "Error: Malformed data at [%d][%d][%d]. Data: '%.*s', matched: %d\n", 
+                            i, j, k, (int)chunk_len, ptr, matched);
+                    return;
+                }
+
+                // Assign parsed values to the map
+                map[i][j][k].color = color;
+                map[i][j][k].type = type;
+                map[i][j][k].symbol = symbol;
+
+                // Move to the next chunk
+                ptr = next_sep + 1; // Move past the '|' separator
+            }
+        }
+    }
+}
+
+int deserialize_player(char* str, player_t* player) {
+    if (!str || !player) return -1;
+
+    // Parse the string and populate the player_t struct
+    int scanned = sscanf(str, "|%lf|%lf|%lf|%lf|%lf|%d",
+                         &player->position.x, &player->position.y, &player->position.z,
+                         &player->angleXY, &player->angleZY, &player->color);
+
+    // Ensure all fields were successfully read
+    if (scanned != 6) {
+        printf("Failed to deserialize player. Expected 6 fields but got %d\n", scanned);
+        return -1;
+    }
+
+    return 0;
+}
+
+void print_server_data(ENetEvent* event) {
+    for (size_t i = 0; i < event->packet->dataLength; ++i) {
+        printf("%c", event->packet->data[i]); // Print byte as hex
+    }
+    printf("\n");
+}
+
+void pull_server_updates(ENetHost* client, ENetPeer* peer, int timeout) {
     ENetEvent event;
-    while (enet_host_service(client, &event, 100) > 0) {
+    while (enet_host_service(client, &event, timeout) > 0) {
         switch (event.type) {
             case ENET_EVENT_TYPE_RECEIVE: {
-                switch (event.packet->dataLength) {
-                    case sizeof(player_t): {
-                        player_t* other_player = (player_t*) event.packet->data;
-                        mvprintw(LINES - 1, COLS / 2 - 15,
-                                 "Received update => x: %f, y: %f, z: %f\n",
-                                 other_player->position.x,
-                                 other_player->position.y,
-                                 other_player->position.z);
+                switch (event.channelID) {
+                    case OUTCOME_MAP_UPDATES_CHANEL: {
+                        // printf("%s:\n", event.packet->data);
+                        for (int k = 0; k < MAP_HEIGHT; k++) {
+                            printf("Recieved map data, Z-level %d:\n", k);
+                            deserialize_map(event.packet->data);
+                            for (int i = 0; i < MAP_SIZE; i++) {
+                                for (int j = 0; j < MAP_SIZE; j++) {
+                                    // printf("|%c, %d, %d|", map[1][i][j].symbol, map[1][i][j].color, map[1][i][j].type);
+                                    printf("%c", map[k][i][j].symbol);
+                                }
+                                printf("\n");
+                            }
+                            printf("\n");
+                        }
                         break;
                     }
-                    case sizeof(other_player_position_t): {
+                    case OUTCOME_NEW_PLAYER_CHANEL: {
+                        printf("Recieve current player\n");
+                        printf("%s\n", event.packet->data);
+                        if (deserialize_player(event.packet->data, this_player) == 0) {
+                            mvprintw(LINES-OUTCOME_NEW_PLAYER_CHANEL, COLS / 2 - 10, "Deserialized player: |%lf|%lf|%lf|%lf|%lf|%d",
+                                this_player->position.x, this_player->position.y, this_player->position.z,
+                                this_player->angleXY, this_player->angleZY, this_player->color);
+
+                            printf("Deserialized player: |%lf|%lf|%lf|%lf|%lf|%d",
+                                this_player->position.x, this_player->position.y, this_player->position.z,
+                                this_player->angleXY, this_player->angleZY, this_player->color);
+                        }
+                        break;
+                    }
+                    case OUTCOME_LIST_OF_PLAYERS_CHANEL: {
+                        printf("recieve list of other players\n");
+                        mvprintw(LINES-OUTCOME_LIST_OF_PLAYERS_CHANEL, COLS / 2 - 10, "Other players positions: %s",
+                                event.packet->data);
+                        other_players = deserialize_positions(event.packet->data, &player_count);
+                        printf("first player: %f, %f, %f\n", other_players[0].x, other_players[0].y, other_players[0].z );
+                        printf("player_count: %d\n", player_count);
+                        break;
+                    }
+                    case OUTCOME_NEW_PLAYER_POSITION: {
+                        // TOOD: 
                         other_player_position_t* new_player_pos =
                             (other_player_position_t*) event.packet->data;
                         position_t pos_to_add;
@@ -255,10 +395,13 @@ void pull_server_updates(ENetHost* client, ENetPeer* peer) {
                         break;
                     }
                     default:
+                        printf("Event from channel: %d recieved; Data: \n", event.channelID);
+                        print_server_data(&event);
                         break;
                 }
                 enet_packet_destroy(event.packet);
                 break;
+
             }
             case ENET_EVENT_TYPE_DISCONNECT:
                 printf("Disconnected from server.\n");
@@ -467,12 +610,16 @@ void send_data_to_server(ENetPeer* peer, ENetHost* client) {
 }
 
 frame_t create_frame(bool write_map) {
+    printf("\n Entered create_frame");
+    fflush(stdout); 
     char buffer[MAP_SIZE][MAP_SIZE];
     for (int i = 0; i < MAP_SIZE; i++) {
         for (int j = 0; j < MAP_SIZE; j++) {
             buffer[i][j] = map[(int)this_player->position.z][i][j].symbol;
         }
     }
+    printf("\n Created buffer");
+    fflush(stdout); 
     object_t map_with_players_added[MAP_HEIGHT][MAP_SIZE][MAP_SIZE];
     memcpy(map_with_players_added, map, sizeof(map));
     for (int i = 0; i < player_count; i++) {
@@ -484,7 +631,11 @@ frame_t create_frame(bool write_map) {
                               [(int)other_players[i].y]
                               [(int)other_players[i].x] = another_player;
     }
+    printf("\n Created map_with_players_added");
+    fflush(stdout); 
     rays_list_t* rays = create_rays(buffer, map_with_players_added);
+    printf("\n Casted rays");
+    fflush(stdout); 
     buffer[(int)this_player->position.y][(int)this_player->position.x] = PLAYER_AVATAR;
 
     if (write_map) {
