@@ -3,6 +3,7 @@
 #include <math.h> 
 #include <string.h>
 #include <enet/enet.h>
+#include "../map_module.h"
 
 #define MAP_SIZE 40
 #define MAP_HEIGHT 20
@@ -31,59 +32,16 @@ const int OUTCOME_NEW_PLAYER_POSITION = 4;
 // income
 const int INCOME_PLAYER_UPDATED_CHANEL = 2;
 
-const int VOID_TYPE = 0;
-const int OBSTICLE_TYPE = 1;
-const int MIRROR_TYPE = 2;
-
-const char OBSTICLE_SYMBOL = '#';
-const char MIRROR_SYMBOL = 'M';
-const char EMPTY_SYMBOL = '.';
-
-typedef struct position {
-    double x;
-    double y;
-    double z;
-} position_t;
-
 position_t spawn_point;
-
-typedef struct player {
-    position_t position;
-    double angleXY;
-    double angleZY;
-    int color;
-} player_t;
-
 player_t players[MAX_CLIENTS];
-
-typedef struct object {
-    int color;
-    int type;
-    char symbol;
-} object_t;
-
-typedef struct position_to_feed { 
-    double x;
-    double y;
-    double z;
-
-    int index;
-} position_to_feed_t;
-
-static object_t map[MAP_HEIGHT][MAP_SIZE][MAP_SIZE];
 
 void init_player(player_t* player);
 ENetHost* create_game_server();
-void initialize_map();
 void add_random_obsticles();
 void print_packet_hex(ENetPacket* packet);
-object_t create_object(int type);
 
 void send_data_to_new_player(player_t* new_player, ENetEvent* event, ENetHost* server);
-
-char* serialize_player_t(player_t* player);
-char* serialize_positions(position_t* positions, size_t count);
-char* serialize_map();
+void send_player_position_update_data(player_t* player, ENetHost* server, int index);
 
 int main(int argc, char** argv) {
     
@@ -106,7 +64,7 @@ int main(int argc, char** argv) {
     while (1) {
         ENetEvent event;
         // Wait up to 10000 ms for an event.
-        while (enet_host_service(server, &event, 1000) > 0) {
+        while (enet_host_service(server, &event, 0) > 0) {
             switch (event.type) {
                 case ENET_EVENT_TYPE_CONNECT: 
                     GLOBAL_PLAYER_COUNT++;
@@ -118,31 +76,26 @@ int main(int argc, char** argv) {
                     init_player(&new_player);
                     
                     send_data_to_new_player(&new_player, &event, server);
-
-                    // {
-                    //     position_to_feed_t* pos_to_feed = malloc(sizeof(position_to_feed_t));
-                    //     pos_to_feed->x = new_player.position.x;
-                    //     pos_to_feed->y = new_player.position.y;
-                    //     pos_to_feed->z = new_player.position.z;
-
-                    //     pos_to_feed->index = event.peer->incomingPeerID;
-
-                    //     ENetPacket* packet = enet_packet_create(pos_to_feed, 
-                    //                                             sizeof(pos_to_feed), 
-                    //                                             ENET_PACKET_FLAG_RELIABLE);
-                    //     printf("send new_player_position data of size: %zu\n", sizeof(*pos_to_feed));
-                    //     enet_host_broadcast(server, 0, packet);
-                    //     print_packet_hex(packet);
-                    // }
+                    send_player_position_update_data(&new_player, server, event.peer->incomingPeerID);
                     break;
 
                 case ENET_EVENT_TYPE_RECEIVE: 
                     switch (event.channelID) {
                     case INCOME_PLAYER_UPDATED_CHANEL:
-                        
+                        printf("Player %d send an update: %s\n", event.peer->incomingPeerID, event.packet->data);
+                        player_t* update_from_player = malloc(sizeof(player_t));
+                        int update_result = deserialize_player(event.packet->data, update_from_player);
+                        if(update_result == -1) {
+                            printf("Failed to deserialise player data\n");
+                            free(update_from_player);
+                            break;
+                        }
+
+                        players[event.peer->incomingPeerID] = *update_from_player;
+                        send_player_position_update_data(update_from_player, server, event.peer->incomingPeerID);
                         break;
                     default:
-                        printf("Unrecognisable event from chanel %d, data: %s", event.channelID, event.packet->data);
+                        printf("Unrecognisable event from chanel %d, data: %s\n", event.channelID, event.packet->data);
                         break;
                     }
                     break;
@@ -166,6 +119,25 @@ int main(int argc, char** argv) {
     return 0;
 }
 
+void send_player_position_update_data(player_t* player, ENetHost* server, int index) {
+    player_position_t* pos_to_feed = malloc(sizeof(player_position_t));
+    pos_to_feed->x = player->position.x;
+    pos_to_feed->y = player->position.y;
+    pos_to_feed->z = player->position.z;
+
+    pos_to_feed->index = index;
+
+    char* serialised_pos = serialize_player_positions(pos_to_feed);
+    printf("serialised_pos: %s\n", serialised_pos);
+
+    ENetPacket* packet = enet_packet_create(serialised_pos, 
+                                            strlen(serialised_pos), 
+                                            ENET_PACKET_FLAG_RELIABLE);
+    printf("send new_player_position data of size: %zu\n", strlen(serialised_pos));
+    enet_host_broadcast(server, OUTCOME_NEW_PLAYER_POSITION, packet);
+    printf("%s\n", serialised_pos);
+}
+
 void send_data_to_new_player(player_t* new_player, ENetEvent* event, ENetHost* server) {
         players[event->peer->incomingPeerID] = *new_player;
 
@@ -187,7 +159,7 @@ void send_data_to_new_player(player_t* new_player, ENetEvent* event, ENetHost* s
         printf("\n");
 
         // sending a new player to peer
-        char* serialised_player = serialize_player_t(new_player);
+        char* serialised_player = serialize_player(new_player);
         ENetPacket* player_packet = enet_packet_create(serialised_player, 
                                                 strlen(serialised_player), 
                                                 ENET_PACKET_FLAG_RELIABLE);
@@ -243,147 +215,9 @@ void init_player(player_t* player) {
     player->color = 0;
 }
 
-void initialize_map() {
-    for (int k = 0; k < MAP_HEIGHT; k++) {
-        for (int i = 0; i < MAP_SIZE; i++) {
-            for (int j = 0; j < MAP_SIZE; j++) {
-                // Set borders
-                if (i == 0 || i == MAP_SIZE - 1 || j == 0 || j == MAP_SIZE - 1 || k == 0 || k == MAP_HEIGHT - 1) {
-                    map[k][i][j] = create_object(OBSTICLE_TYPE); 
-                } else {
-                    map[k][i][j] = create_object(VOID_TYPE); 
-                }
-            }
-        }
-        printf("Finished z level: %d \n", k);
-    }
-    printf("Adding obsticles\n");
-    // add_random_obsticles();
-}
-
-void add_random_obsticles() {
-    srand(time(NULL)); 
-
-    int wall_count = 100;
-    for (int i = 0; i < wall_count; i++) {
-        int x = rand() % (MAP_SIZE - 2) + 1; 
-        int y = rand() % (MAP_SIZE - 2) + 1; 
-        int z = rand() % (MAP_HEIGHT - 2) + 1; 
-
-        if (rand() % 2 == 0) {
-            map[z][y][x] = create_object(MIRROR_TYPE); 
-        } else {
-            map[z][y][x] = create_object(OBSTICLE_TYPE); 
-        }
-        // map[z][y][x] = create_object(OBSTICLE_TYPE); 
-
-    }
-
-    for (int k = MAP_HEIGHT*0.1; k < MAP_HEIGHT * 0.8; k++){
-        for (int j = 10; j < 40; j++) {
-            map[k][20][j] = create_object(MIRROR_TYPE); // Horizontal wall at row 20
-        }
-    }
-}
-
-object_t create_object(int type) {
-    object_t object;
-    switch (type)
-    {
-    case OBSTICLE_TYPE:
-        object.color = rand() % 7 + 1;
-        object.symbol = OBSTICLE_SYMBOL;
-        object.type = OBSTICLE_TYPE;
-        break;
-    case MIRROR_TYPE:
-        object.symbol = MIRROR_SYMBOL;
-        object.type = MIRROR_TYPE;
-        break;
-    case VOID_TYPE:
-        object.symbol = EMPTY_SYMBOL;
-        object.type = VOID_TYPE;
-        object.color = 0;
-        break;
-    default:
-        return object;
-    }
-
-    return object;
-}
-
 void print_packet_hex(ENetPacket* packet) {
     for (size_t i = 0; i < packet->dataLength; ++i) {
         printf("%02X ", packet->data[i]); // Print byte as hex
     }
     printf("\n");
-}
-
-char* serialize_player_t(player_t* player) {
-    if (!player) return NULL;
-
-    // Allocate memory for the serialized string
-    char* buffer = malloc(256);
-    if (!buffer) {
-        perror("Failed to allocate memory for serialization");
-        return NULL;
-    }
-
-    // Format the struct into the string
-    snprintf(buffer, 256, "|%f|%f|%f|%f|%f|%d",
-             player->position.x, player->position.y, player->position.z,
-             player->angleXY, player->angleZY, player->color);
-
-    return buffer; // Caller must free this memory
-}
-
-char* serialize_positions(position_t* positions, size_t count) {
-    if (!positions || count == 0) return NULL;
-
-    // Allocate a buffer for serialization
-    size_t buffer_size = count * 64; // Estimate: 64 characters per position
-    char* buffer = malloc(buffer_size);
-    if (!buffer) {
-        perror("Failed to allocate memory for serialization");
-        return NULL;
-    }
-    buffer[0] = '\0'; // Initialize as an empty string
-
-    // Append each position to the buffer
-    for (size_t i = 0; i < count; ++i) {
-        char line[64];
-        snprintf(line, sizeof(line), "%lf|%lf|%lf\n",
-                 positions[i].x, positions[i].y, positions[i].z);
-        strcat(buffer, line);
-    }
-
-    return buffer; // Caller must free this memory
-}
-
-char* serialize_map() {
-    // Calculate required buffer size
-    size_t buffer_size = MAP_HEIGHT * MAP_SIZE * MAP_SIZE * 10 + 1; // 10 chars for |{color} {type} {symbol}| per object
-    char* buffer = malloc(buffer_size);
-
-    if (buffer == NULL) {
-        fprintf(stderr, "Failed to allocate memory for serialization.\n");
-        return NULL;
-    }
-
-    char temp[50]; // Temporary buffer for each object
-    buffer[0] = '\0'; // Initialize buffer as an empty string
-
-    for (int i = 0; i < MAP_HEIGHT; i++) {
-        for (int j = 0; j < MAP_SIZE; j++) {
-            for (int k = 0; k < MAP_SIZE; k++) {
-                snprintf(temp, sizeof(temp), "%d %d %c|", map[i][j][k].color, map[i][j][k].type, map[i][j][k].symbol);
-                if (strlen(buffer) + strlen(temp) >= buffer_size - 1) {
-                    fprintf(stderr, "Buffer overflow detected during serialization.\n");
-                    free(buffer);
-                    return NULL;
-                }
-                strcat(buffer, temp);
-            }
-        }
-    }
-    return buffer;
 }

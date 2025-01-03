@@ -40,7 +40,7 @@ typedef struct other_player_position {
     double y;
     double z;
     int index;
-} other_player_position_t;
+} player_position_t;
 
 typedef struct player {
     position_t position;

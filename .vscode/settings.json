@@ -25,6 +25,8 @@
         "stdio.h": "c",
         "enet.h": "c",
         "cstring": "c",
-        "__string": "c"
+        "__string": "c",
+        "map_module.h": "c",
+        "string.h": "c"
     }
 }
